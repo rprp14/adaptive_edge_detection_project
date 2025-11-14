@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Adaptive Edge Detection</title>
+</head>
+<body>
+  <h2>Upload Image</h2>
+  <form id="uploadForm" enctype="multipart/form-data">
+    <input type="file" name="image" id="imageInput"/>
+    <button type="submit">Upload</button>
+  </form>
+
+  <div id="results"></div>
+
+  <script>
+    const form = document.getElementById('uploadForm');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const file = document.getElementById('imageInput').files[0];
+      const formData = new FormData();
+      formData.append('image', file);
+      const res = await fetch('http://127.0.0.1:5000/upload', {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      let html = `<h3>Results</h3>`;
+      for (const key of ['basic_output','adaptive_output','sobel_output','pso_output','ml_output']){
+        if (data[key]){
+          html += `<p>${key}:</p><img src="${data[key]}" width="300"/>`;
+        }
+      }
+      document.getElementById('results').innerHTML = html;
+    });
+  </script>
+</body>
+</html>
