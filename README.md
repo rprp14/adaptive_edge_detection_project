@@ -97,9 +97,9 @@ pip install -r requirements.txt
 
 ---
 
-## 🚀 Running the Project  
+##  Running the Project  
 
-Your project contains **five training pipelines** and **one preprocessing (mask generation) pipeline**.  
+This project contains **five training pipelines** and **one preprocessing (mask generation) pipeline**.  
 Each script trains a different component of your hybrid Adaptive Edge Detection System.
 
 The generated models are automatically saved inside:
@@ -112,7 +112,7 @@ Below are the correct commands, their purpose, and exactly which `.h5` / `.pkl` 
 
 ---
 
-### 🟦 0. (MANDATORY FIRST STEP) — Generate Canny Masks  
+###  0. (MANDATORY FIRST STEP) — Generate Canny Masks  
 This script creates **ground-truth training masks** needed by U-Net and ViT-UNet.
 
 ```bash
@@ -132,7 +132,7 @@ python backend/generate_masks.py
 
 ---
 
-### 1️⃣ Train the U-Net Model (Segmentation-Based Edge Refinement)  
+### 1️. Train the U-Net Model (Segmentation-Based Edge Refinement)  
 ```bash
 python backend/train_unet_model.py
 ```
@@ -148,7 +148,7 @@ backend/models/edge_detection_model.h5
 
 ---
 
-### 2️⃣ Train the Vision Transformer + UNet Hybrid Model (ViT-UNet)  
+### 2️. Train the Vision Transformer + UNet Hybrid Model (ViT-UNet)  
 ```bash
 python backend/train_vit_model.py
 ```
@@ -165,7 +165,7 @@ backend/models/vit_unet_weights.h5
 
 ---
 
-### 3️⃣ Train the Traditional + ML Edge Detection Model  
+### 3️. Train the Traditional + ML Edge Detection Model  
 ```bash
 python backend/train_edge_model.py
 ```
@@ -181,7 +181,7 @@ backend/models/edge_detection_model.h5
 
 ---
 
-### 4️⃣ Train the Threshold Predictor Model (RandomForest)  
+### 4️. Train the Threshold Predictor Model (RandomForest)  
 ```bash
 python backend/train_model.py
 ```
@@ -197,19 +197,17 @@ backend/models/threshold_predictor.pkl
 
 ---
 
-### 🟧 OPTIONAL — PSO Integration (If you add PSO later)  
-If your final PSO script is added (not provided yet),  
-you may run it like:
+###  5. Start server 
+After training all the modals Run this command to start the backend.
+If your backend run succesfully you will get to see on the screen "Adaptive Edge Detection API — Running".
 
 ```bash
-python backend/src/pso_optimizer.py
+python backend/app.py
 ```
-
-But since PSO code exists but is not a training pipeline, it does **not** generate `.h5` files.
 
 ---
 
-### 📌 Summary of All Training Outputs
+###  Summary of All Training Outputs
 
 | Script | Purpose | Output File(s) |
 |--------|---------|----------------|
@@ -218,11 +216,11 @@ But since PSO code exists but is not a training pipeline, it does **not** genera
 | train_vit_model.py | Train ViT-UNet hybrid | `vit_unet_model.h5`, `vit_unet_weights.h5` |
 | train_edge_model.py | Train classical U-Net edge model | `edge_detection_model.h5` |
 | train_model.py | Train threshold predictor (RandomForest) | `threshold_predictor.pkl` |
-| pso_optimizer.py (optional) | Adaptive PSO threshold tuning | No model files |
+| app.py | To start backend server | - |
 
 ---
 
-### ✔ Recommended Training Order
+###  Recommended Training Order
 
 ```
 1. python backend/generate_masks.py
