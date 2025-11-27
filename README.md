@@ -1,7 +1,7 @@
 #  Adaptive Edge Detection using PSO + Machine Learning  
 ### (Canny + Sobel + Particle Swarm Optimization + Unet + Vision Transformer)
 
-## 📌 Overview  
+##  Overview  
 This project implements an **Adaptive Edge Detection System** combining:
 
 - **Traditional edge detectors** → *Canny* & *Sobel*  
@@ -81,7 +81,7 @@ adaptive_edge_detection_project/
 
 ---
 
-## 🛠️ Technologies Used  
+##  Technologies Used  
 - Python, TensorFlow, OpenCV  
 - Vision Transformer (ViT)  
 - Particle Swarm Optimization  
@@ -93,6 +93,7 @@ adaptive_edge_detection_project/
 ##  Installation  
 ```bash
 pip install -r requirements.txt
+pip install flask flask_cors flask_sqlalchemy numpy opencv-python tensorflow pillow 
 ```
 
 ---
@@ -205,6 +206,26 @@ If your backend run succesfully you will get to see on the screen "Adaptive Edge
 python backend/app.py
 ```
 
+###  6. For frontend(In another terminal)
+Open a new terminal to run the frontend,
+
+```bash
+.venv\Scripts\Activate
+```
+
+Move into **frontend** folder
+
+```bash
+cd frontend
+```
+
+Run the command
+
+```bash
+python -m http.server 3000
+```
+After running this command go on the Crome and type "localhost://3000" in the search bar, you will find the output.
+
 ---
 
 ###  Summary of All Training Outputs
@@ -228,6 +249,7 @@ python backend/app.py
 3. python backend/train_vit_model.py
 4. python backend/train_edge_model.py
 5. python backend/train_model.py
+6. python backend/app.py
 ```
 
 This ensures all deep models + threshold predictor are properly trained.
