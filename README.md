@@ -1,13 +1,15 @@
 #  Adaptive Edge Detection using PSO + Machine Learning  
-### (Canny + Sobel + Particle Swarm Optimization + Vision Transformer)
+### (Canny + Sobel + Particle Swarm Optimization + Unet + Vision Transformer)
 
-##  Overview  
+## 📌 Overview  
 This project implements an **Adaptive Edge Detection System** combining:
 
 - **Traditional edge detectors** → *Canny* & *Sobel*  
 - **PSO (Particle Swarm Optimization)** → optimizes threshold values  
 - **Vision Transformer (ViT)** → learns global image features  
+- **U-Net Architecture** → enhances spatial feature extraction and improves segmentation-based edge refinement  
 - **Fusion Model** → improves accuracy and adaptability over standard methods  
+  
 
 The goal is to achieve:  
  -Higher accuracy  
@@ -84,11 +86,11 @@ adaptive_edge_detection_project/
 - Vision Transformer (ViT)  
 - Particle Swarm Optimization  
 - Canny & Sobel Edge Detection  
-- Optional HTML/React Frontend  
+- Optional HTML,CSS,Js/React Frontend  
 
 ---
 
-## 📦 Installation  
+##  Installation  
 ```bash
 pip install -r requirements.txt
 ```
@@ -97,24 +99,146 @@ pip install -r requirements.txt
 
 ## 🚀 Running the Project  
 
-### 1️⃣ Train the Model  
-```bash
-python backend/train_vit_pso_model.py
+Your project contains **five training pipelines** and **one preprocessing (mask generation) pipeline**.  
+Each script trains a different component of your hybrid Adaptive Edge Detection System.
+
+The generated models are automatically saved inside:
+
+```
+backend/models/
 ```
 
-### 2️⃣ Run Edge Detection  
-```bash
-python backend/pso_optimizer.py
-```
+Below are the correct commands, their purpose, and exactly which `.h5` / `.pkl` file each script generates.
 
-### 3️⃣ Optional Frontend  
+---
+
+### 🟦 0. (MANDATORY FIRST STEP) — Generate Canny Masks  
+This script creates **ground-truth training masks** needed by U-Net and ViT-UNet.
+
 ```bash
-python -m http.server 3000
+python backend/generate_masks.py
+```
+**What happens:**  
+- Reads images from `backend/dataset/`  
+- Generates Canny masks using thresholds 50–150  
+- Saves them into `backend/canny_masks/`  
+- Required before training **U-Net**, **Edge Model**, and **ViT-UNet**
+
+**Files generated:**  
+- `.png` / `.jpg` masks inside:  
+  ```
+  backend/canny_masks/
+  ```
+
+---
+
+### 1️⃣ Train the U-Net Model (Segmentation-Based Edge Refinement)  
+```bash
+python backend/train_unet_model.py
+```
+**What happens:**  
+- Loads dataset + canny masks :contentReference[oaicite:0]{index=0}  
+- Builds and trains a **U-Net** segmentation model  
+- Learns fine-grained edge maps
+
+**Files generated (saved automatically):**  
+```
+backend/models/edge_detection_model.h5
 ```
 
 ---
 
-## 🤝 Contributing  
+### 2️⃣ Train the Vision Transformer + UNet Hybrid Model (ViT-UNet)  
+```bash
+python backend/train_vit_model.py
+```
+**What happens:**  
+- Loads dataset + canny masks :contentReference[oaicite:1]{index=1}  
+- Builds ViT-UNet using `build_vit_segmentation_model()` from `vit_model.py`  
+- Trains Transformer + UNet decoder for deep global-spatial edge detection
+
+**Files generated:**  
+```
+backend/models/vit_unet_model.h5
+backend/models/vit_unet_weights.h5
+```
+
+---
+
+### 3️⃣ Train the Traditional + ML Edge Detection Model  
+```bash
+python backend/train_edge_model.py
+```
+**What happens:**  
+- Loads dataset + Canny masks :contentReference[oaicite:2]{index=2}  
+- Builds and trains a **pure U-Net edge model** (not ViT-based)  
+- Used for fast inference and baseline comparison
+
+**Files generated:**  
+```
+backend/models/edge_detection_model.h5
+```
+
+---
+
+### 4️⃣ Train the Threshold Predictor Model (RandomForest)  
+```bash
+python backend/train_model.py
+```
+**What happens:**  
+- Extracts 3 features from each training image (mean, std, entropy)  
+- Trains a `RandomForestClassifier` to predict thresholds for PSO/Canny  
+- Saves threshold prediction model using pickle :contentReference[oaicite:3]{index=3}
+
+**Files generated:**  
+```
+backend/models/threshold_predictor.pkl
+```
+
+---
+
+### 🟧 OPTIONAL — PSO Integration (If you add PSO later)  
+If your final PSO script is added (not provided yet),  
+you may run it like:
+
+```bash
+python backend/src/pso_optimizer.py
+```
+
+But since PSO code exists but is not a training pipeline, it does **not** generate `.h5` files.
+
+---
+
+### 📌 Summary of All Training Outputs
+
+| Script | Purpose | Output File(s) |
+|--------|---------|----------------|
+| generate_masks.py | Create canny ground-truth masks | `backend/canny_masks/*.png` |
+| train_unet_model.py | Train U-Net model | `edge_detection_model.h5` |
+| train_vit_model.py | Train ViT-UNet hybrid | `vit_unet_model.h5`, `vit_unet_weights.h5` |
+| train_edge_model.py | Train classical U-Net edge model | `edge_detection_model.h5` |
+| train_model.py | Train threshold predictor (RandomForest) | `threshold_predictor.pkl` |
+| pso_optimizer.py (optional) | Adaptive PSO threshold tuning | No model files |
+
+---
+
+### ✔ Recommended Training Order
+
+```
+1. python backend/generate_masks.py
+2. python backend/train_unet_model.py
+3. python backend/train_vit_model.py
+4. python backend/train_edge_model.py
+5. python backend/train_model.py
+```
+
+This ensures all deep models + threshold predictor are properly trained.
+
+
+
+---
+
+##  Contributing  
 Contributions are welcome!
 
 ---
