@@ -81,6 +81,8 @@ adaptive_edge_detection_project/
 
 ---
 
+---
+
 ##  Technologies Used  
 - Python, TensorFlow, OpenCV  
 - Vision Transformer (ViT)  
