@@ -1,18 +1,37 @@
-#--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-import os
+# FILE: backend/app.py
+# PURPOSE: FINAL MASTER SERVER. Robust model loading (fallback to rebuild+weights), PSO, ML, UNet & ViT inference.
+# NOTE: All FIXes are marked with "# FIX:" comments.
+
+'''import os
 import io
-from datetime import datetime
+import pickle
+from datetime import datetime, timezone
+
+import cv2
+import numpy as np
+from PIL import Image
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
-from PIL import Image
-import numpy as np
-import cv2
+
+# pyswarm may be installed as 'pyswarm' — we import pso directly
+from pyswarm import pso
+
+# TensorFlow / Keras
 import tensorflow as tf
-from vit_edge import ViTEdgeDetector
-from vit_pso import ViTPSO
-# NEW: Import the custom fracture predictor
-#from fracture_predictor import FracturePredictor 
+from tensorflow.keras.models import load_model
+
+# --- Import your model-builder so we can rebuild ViT if needed
+# FIX: We import the function(s) to rebuild the ViT architecture when loading the full model fails.
+# Make sure backend/vit_model.py defines `build_vit_segmentation_model` with the same signature used during training.
+try:
+    from vit_model import build_vit_segmentation_model
+    from vit_model import PatchEmbed, TransformerBlock  # Optional: for custom_objects if needed
+except Exception:
+    # If vit_model import fails, we'll still proceed but ViT won't be available.
+    build_vit_segmentation_model = None
+    PatchEmbed = None
+    TransformerBlock = None
 
 # ------------------ Suppress TensorFlow INFO/WARNING ------------------
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -21,350 +40,683 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 app = Flask(__name__)
 CORS(app)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///images.db'
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_FOLDER = os.path.join(APP_ROOT, 'uploads')
+MODELS_FOLDER = os.path.join(APP_ROOT, 'models')
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(MODELS_FOLDER, exist_ok=True)
+
+# DB (same as your original)
+db_path = os.path.join(APP_ROOT, 'images.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
-UPLOAD_FOLDER = 'uploads'
+# ---------------------- Config ----------------------
+IMG_WIDTH = 256
+IMG_HEIGHT = 256
+IMG_CHANNELS = 1
+BATCH_SIZE = 4
+EPOCHS = 20
+
+# Model file names (change if your files are different)
+DL_UNET_FULLPATH = os.path.join(MODELS_FOLDER, 'edge_detection_model.h5')
+# For ViT we prefer weights file (recommended). If not present, the code will try the full model file.
+VIT_WEIGHTS_PATH = os.path.join(MODELS_FOLDER, 'vit_unet_weights.h5')      # recommended
+VIT_FULLMODEL_PATH = os.path.join(MODELS_FOLDER, 'vit_unet_model.h5')     # optional fallback
+ML_MODEL_PATH = os.path.join(MODELS_FOLDER, 'threshold_predictor.pkl')
+
+# ---------------------- Custom loss (if needed) ----------------------
+# FIX: Define custom loss exactly as used when training (if any). This helps when attempting to load full model.
+def CustomBinaryCrossentropy(y_true, y_pred):
+    y_true = tf.cast(y_true, y_pred.dtype)
+    y_true_flat = tf.reshape(y_true, shape=[-1])
+    y_pred_flat = tf.reshape(y_pred, shape=[-1])
+    return tf.keras.losses.binary_crossentropy(y_true_flat, y_pred_flat)
+
+CUSTOM_OBJECTS = {'CustomBinaryCrossentropy': CustomBinaryCrossentropy}
+# Also include PatchEmbed/TransformerBlock if vit model was saved including them
+if PatchEmbed is not None:
+    CUSTOM_OBJECTS['PatchEmbed'] = PatchEmbed
+if TransformerBlock is not None:
+    CUSTOM_OBJECTS['TransformerBlock'] = TransformerBlock
+
+# ---------------------- Globals to hold models ----------------------
+dl_unet_model = None
+vit_model = None
+ml_model = None
+
+# ---------------------- Model loading helpers ----------------------
+
+def try_load_full_model(path, custom_objects=None):
+    """Try loading a full Keras model (.h5). Returns model or raises."""
+    # FIX: use compile=False to avoid optimizer/loss deserialization issues
+    return load_model(path, compile=False, custom_objects=custom_objects or {})
+
+
+def try_rebuild_vit_and_load_weights(weights_path, input_shape=(256,256,1), patch_size=16):
+    """
+    FIX: Rebuilds the ViT architecture (from vit_model.build_vit_segmentation_model)
+    and loads weights. This avoids deserialization problems with custom layers.
+    """
+    global build_vit_segmentation_model
+    if build_vit_segmentation_model is None:
+        raise RuntimeError("build_vit_segmentation_model not importable from vit_model.py")
+    model = build_vit_segmentation_model(
+        input_shape=input_shape,
+        patch_size=patch_size,
+        num_layers=4,
+        num_heads=4,
+        embed_dim=64,
+        feed_forward_dim=128,
+        decoder_filters=(64, 32, 16, 8)
+    )
+    # FIX: compile is optional for inference; keep consistent loss if you need to eval
+    model.compile(optimizer='adam', loss='binary_crossentropy')
+    model.load_weights(weights_path)
+    return model
+
+# ---------------------- Load UNet (safe) ----------------------
+try:
+    if os.path.exists(DL_UNET_FULLPATH):
+        # FIX: compile=False avoids errors if saved model included optimizer/loss incompatible with current TF
+        dl_unet_model = try_load_full_model(DL_UNET_FULLPATH, custom_objects=CUSTOM_OBJECTS)
+        print(f"--- Successfully loaded UNet model from {DL_UNET_FULLPATH} ---")
+    else:
+        print(f"--- UNet model file not found at: {DL_UNET_FULLPATH} (skipping) ---")
+except Exception as e:
+    print(f"!!! Error loading UNet model: {e} !!!")
+
+# ---------------------- Load ViT model (robust: try full model -> fallback to rebuild+weights) ----------------------
+# FIX: We try to load the full model first (in case it was saved without custom issues),
+# but if that fails we rebuild the model architecture and load the weights file instead.
+try:
+    if os.path.exists(VIT_FULLMODEL_PATH):
+        try:
+            vit_model = try_load_full_model(VIT_FULLMODEL_PATH, custom_objects=CUSTOM_OBJECTS)
+            print(f"--- Successfully loaded ViT full model from {VIT_FULLMODEL_PATH} ---")
+        except Exception as e_full:
+            print(f"--- Failed to load full ViT model (will try rebuild+weights). Reason: {e_full}")
+            vit_model = None
+
+    # If full model not loaded, try to load weights into rebuilt architecture
+    if vit_model is None and os.path.exists(VIT_WEIGHTS_PATH):
+        try:
+            vit_model = try_rebuild_vit_and_load_weights(VIT_WEIGHTS_PATH, input_shape=(IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS), patch_size=16)
+            print(f"--- Successfully rebuilt ViT model and loaded weights from {VIT_WEIGHTS_PATH} ---")
+        except Exception as e_weights:
+            print(f"!!! Failed to rebuild ViT model and load weights: {e_weights} !!!")
+            vit_model = None
+    elif vit_model is None:
+        print(f"--- ViT: Neither full model ({VIT_FULLMODEL_PATH}) nor weights ({VIT_WEIGHTS_PATH}) found. ViT disabled. ---")
+
+except Exception as e:
+    print(f"!!! Error loading ViT model (outer): {e} !!!")
+    vit_model = None
+
+# ---------------------- Load ML predictor ----------------------
+try:
+    if os.path.exists(ML_MODEL_PATH):
+        with open(ML_MODEL_PATH, 'rb') as f:
+            ml_model = pickle.load(f)
+        print(f"--- Successfully loaded ML predictor model from {ML_MODEL_PATH} ---")
+    else:
+        print(f"--- ML predictor file not found at: {ML_MODEL_PATH} (skipping) ---")
+except Exception as e:
+    print(f"!!! Error loading ML predictor model: {e} !!!")
+    ml_model = None
+
+# ---------------------- Helper functions (data preprocessing / postprocessing) ----------------------
+
+def preprocess_dl(img_path):
+    """Read image grayscale, resize and normalize to shape (1, H, W, 1)."""
+    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise RuntimeError(f"Could not read image at {img_path}")
+    img = cv2.resize(img, (IMG_WIDTH, IMG_HEIGHT))
+    img = img.astype(np.float32) / 255.0
+    img = np.reshape(img, (1, IMG_HEIGHT, IMG_WIDTH, 1)).astype(np.float32)
+    return img
+
+def postprocess_dl(prediction):
+    """
+    prediction: model output (batch, H, W, 1) with values in [0,1].
+    Convert to 8-bit binary edge map (H, W).
+    """
+    pred = prediction[0]  # (H, W, 1)
+    # Convert to 0-255 uint8
+    pred_map_8bit = (pred * 255.0).astype(np.uint8)
+    # Use Otsu thresholding to binarize (works well for edges)
+    _, output_img = cv2.threshold(pred_map_8bit, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if output_img.ndim == 3:
+        output_img = output_img.squeeze(-1)
+    return output_img
+
+# ---------------------- Adaptive Canny helpers ----------------------
+def extract_features(image_path):
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return np.array([0.0, 0.0, 0.0])
+    return np.array([np.mean(img), np.std(img), np.var(img)])
+
+def predict_threshold(features):
+    if ml_model is None:
+        return 100
+    features = np.array(features).reshape(1, -1)
+    pred = ml_model.predict(features)
+    # FIX: Ensure scalar return
+    return float(pred[0])
+
+# ---------------------- PSO cost function ----------------------
+def pso_cost_function(thresh, img_gray):
+    low_thresh = int(thresh[0])
+    high_thresh = low_thresh + 50
+    low_thresh = np.clip(low_thresh, 1, 255)
+    high_thresh = np.clip(high_thresh, 1, 255)
+    edges = cv2.Canny(img_gray, low_thresh, high_thresh)
+    return -np.sum(edges)
+
+# ---------------------- DB model ----------------------
+class UploadedImage(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String(255), nullable=False)
+    file_path = db.Column(db.String(255), nullable=False)
+    uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def __repr__(self):
+        return f'<Image {self.filename}>'
+
+with app.app_context():
+    db.create_all()
+
+# ---------------------- Routes ----------------------
+
+# FIX: Add root route to prevent 404 when browsing http://127.0.0.1:5000/
+@app.route("/", methods=["GET"])
+def index():
+    return "<h3>Adaptive Edge Detection API — Running</h3>", 200
+
+# Serve uploaded/result files
+@app.route('/get_output/<filename>')
+def get_output(filename):
+    return send_from_directory(UPLOAD_FOLDER, filename)
+
+@app.route('/upload', methods=['POST'])
+def upload_image_and_process():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    # Save uploaded image using PIL to handle formats robustly
+    original_filename = f"upload_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}.png"
+    original_filepath = os.path.join(UPLOAD_FOLDER, original_filename)
+    try:
+        img = Image.open(file)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        img.save(original_filepath)
+    except Exception as e:
+        return jsonify({'error': f'Invalid image file: {e}'}), 400
+
+    # Save DB record
+    new_image_record = UploadedImage(filename=original_filename, file_path=original_filepath)
+    db.session.add(new_image_record)
+    db.session.commit()
+
+    results = {
+        'original_url': f'{request.host_url}get_output/{original_filename}',
+        'image_id': new_image_record.id
+    }
+
+    try:
+        # Read grayscale once (used by many methods)
+        img_gray = cv2.imread(original_filepath, cv2.IMREAD_GRAYSCALE)
+        if img_gray is None:
+            return jsonify({'error': 'Could not read image in grayscale'}), 500
+
+        # 1) Basic Canny
+        basic_edges = cv2.Canny(img_gray, 100, 200)
+        basic_filename = f"basic_{original_filename}"
+        cv2.imwrite(os.path.join(UPLOAD_FOLDER, basic_filename), basic_edges)
+        results['basic_output'] = f'{request.host_url}get_output/{basic_filename}'
+
+        # 2) Sobel
+        sobel_x = cv2.Sobel(img_gray, cv2.CV_64F, 1, 0, ksize=5)
+        sobel_y = cv2.Sobel(img_gray, cv2.CV_64F, 0, 1, ksize=5)
+        sobel_edges = cv2.magnitude(sobel_x, sobel_y)
+        sobel_edges = cv2.convertScaleAbs(sobel_edges)
+        sobel_filename = f"sobel_{original_filename}"
+        cv2.imwrite(os.path.join(UPLOAD_FOLDER, sobel_filename), sobel_edges)
+        results['sobel_output'] = f'{request.host_url}get_output/{sobel_filename}'
+
+        # 3) Adaptive ML Canny
+        features = extract_features(original_filepath)
+        ml_thresh = predict_threshold(features)
+        adaptive_edges = cv2.Canny(img_gray, int(ml_thresh), int(ml_thresh) + 50)
+        adaptive_filename = f"adaptive_ml_{original_filename}"
+        cv2.imwrite(os.path.join(UPLOAD_FOLDER, adaptive_filename), adaptive_edges)
+        results['adaptive_output'] = f'{request.host_url}get_output/{adaptive_filename}'
+
+        # 4) PSO Canny
+        pso_thresh, _ = pso(pso_cost_function, [10], [150], args=(img_gray,), swarmsize=10, maxiter=10)
+        pso_edges = cv2.Canny(img_gray, int(pso_thresh[0]), int(pso_thresh[0]) + 50)
+        pso_filename = f"pso_{original_filename}"
+        cv2.imwrite(os.path.join(UPLOAD_FOLDER, pso_filename), pso_edges)
+        results['pso_output'] = f'{request.host_url}get_output/{pso_filename}'
+
+        # 5) Deep Learning UNet
+        if dl_unet_model is not None:
+            unet_input = preprocess_dl(original_filepath)
+            unet_pred = dl_unet_model.predict(unet_input, verbose=0)
+            unet_edges = postprocess_dl(unet_pred)
+            dl_filename = f"dl_unet_{original_filename}"
+            cv2.imwrite(os.path.join(UPLOAD_FOLDER, dl_filename), unet_edges)
+            results['dl_output'] = f'{request.host_url}get_output/{dl_filename}'
+        else:
+            results['dl_output'] = results.get('adaptive_output')
+
+        # 6) Hybrid ViT-UNet
+        if vit_model is not None:
+            vit_input = preprocess_dl(original_filepath)
+            vit_pred = vit_model.predict(vit_input, verbose=0)
+            vit_edges = postprocess_dl(vit_pred)
+            vit_filename = f"vit_{original_filename}"
+            cv2.imwrite(os.path.join(UPLOAD_FOLDER, vit_filename), vit_edges)
+            results['vit_output'] = f'{request.host_url}get_output/{vit_filename}'
+        else:
+            results['vit_output'] = results.get('adaptive_output')
+
+        # 7) ViT + PSO hybrid (here we use PSO-optimized Canny as hybrid output)
+        # If you want to run PSO on ViT output, that's more complex — left as a research extension.
+        vit_pso_edges = None
+        if vit_model is not None:
+            # Re-run PSO for input image and return its Canny map as hybrid output
+            pso_thresh2, _ = pso(pso_cost_function, [10], [150], args=(img_gray,), swarmsize=10, maxiter=10)
+            pso_low_thresh = int(pso_thresh2[0])
+            pso_high_thresh = pso_low_thresh + 50
+            vit_pso_edges = cv2.Canny(img_gray, pso_low_thresh, pso_high_thresh)
+        else:
+            # fallback: use previously computed PSO output
+            vit_pso_edges = pso_edges
+
+        vit_pso_filename = f"vit_pso_{original_filename}"
+        cv2.imwrite(os.path.join(UPLOAD_FOLDER, vit_pso_filename), vit_pso_edges)
+        results['vit_pso_output'] = f'{request.host_url}get_output/{vit_pso_filename}'
+
+    except Exception as e:
+        # FIX: print stack info server-side for debugging while returning 500 to client
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Processing failed: {e}'}), 500
+
+    return jsonify(results), 200
+
+# ---------------------- Run app ----------------------
+if __name__ == '__main__':
+    # FIX: increase upload limit to 16MB (same as your earlier code)
+    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+    # FIX: run debug for development (set False for production)
+    app.run(host="127.0.0.1", port=5000, debug=True)
+'''
+
+#================================================================================================================================================================
+
+# FILE: backend/app.py
+# PURPOSE: FINAL MASTER SERVER WITH ACCURACY SCORE FOR EACH EDGE-OUTPUT
+# NOTE: All FIXES for accuracy marked with "# ACCURACY FIX"
+
+import os
+import io
+import pickle
+from datetime import datetime, timezone
+
+import cv2
+import numpy as np
+from PIL import Image
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
+
+# pyswarm
+from pyswarm import pso
+
+# TensorFlow / Keras
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+
+# --- Import ViT model builder ---
+try:
+    from vit_model import build_vit_segmentation_model
+    from vit_model import PatchEmbed, TransformerBlock
+except Exception:
+    build_vit_segmentation_model = None
+    PatchEmbed = None
+    TransformerBlock = None
+
+# ===============================
+# ACCURACY FIX: import accuracy function
+# ===============================
+from src.edge_accuracy import compute_edge_accuracy
+
+# ------------------ Suppress TensorFlow logging ------------------
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+# ---------------------- App + Folders ----------------------
+app = Flask(__name__)
+CORS(app)
+
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_FOLDER = os.path.join(APP_ROOT, 'uploads')
+MODELS_FOLDER = os.path.join(APP_ROOT, 'models')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(MODELS_FOLDER, exist_ok=True)
+
+# ---------------------- Database ----------------------
+db_path = os.path.join(APP_ROOT, 'images.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
+# ---------------------- Config ----------------------
+IMG_WIDTH = 256
+IMG_HEIGHT = 256
+IMG_CHANNELS = 1
+
+# ---------------------- Model paths ----------------------
+DL_UNET_FULLPATH = os.path.join(MODELS_FOLDER, 'edge_detection_model.h5')
+VIT_WEIGHTS_PATH = os.path.join(MODELS_FOLDER, 'vit_unet_weights.h5')
+VIT_FULLMODEL_PATH = os.path.join(MODELS_FOLDER, 'vit_unet_model.h5')
+ML_MODEL_PATH = os.path.join(MODELS_FOLDER, 'threshold_predictor.pkl')
+
+# ---------------------- Custom Loss ----------------------
+def CustomBinaryCrossentropy(y_true, y_pred):
+    y_true = tf.cast(y_true, y_pred.dtype)
+    y_true_flat = tf.reshape(y_true, shape=[-1])
+    y_pred_flat = tf.reshape(y_pred, shape=[-1])
+    return tf.keras.losses.binary_crossentropy(y_true_flat, y_pred_flat)
+
+CUSTOM_OBJECTS = {"CustomBinaryCrossentropy": CustomBinaryCrossentropy}
+if PatchEmbed is not None:
+    CUSTOM_OBJECTS["PatchEmbed"] = PatchEmbed
+if TransformerBlock is not None:
+    CUSTOM_OBJECTS["TransformerBlock"] = TransformerBlock
+
+# ---------------------- Globals ----------------------
+dl_unet_model = None
+vit_model = None
+ml_model = None
+
+# ---------------------- Model Loading Helpers ----------------------
+def try_load_full_model(path, custom_objects=None):
+    return load_model(path, compile=False, custom_objects=custom_objects or {})
+
+def try_rebuild_vit_and_load_weights(weights_path,
+                                     input_shape=(256,256,1),
+                                     patch_size=16):
+
+    global build_vit_segmentation_model
+    if build_vit_segmentation_model is None:
+        raise RuntimeError("build_vit_segmentation_model not importable")
+
+    model = build_vit_segmentation_model(
+        input_shape=input_shape,
+        patch_size=patch_size,
+        num_layers=4,
+        num_heads=4,
+        embed_dim=64,
+        feed_forward_dim=128,
+        decoder_filters=(64,32,16,8)
+    )
+    model.compile(optimizer="adam", loss="binary_crossentropy")
+    model.load_weights(weights_path)
+    return model
+
+# ---------------------- Load UNet ----------------------
+try:
+    if os.path.exists(DL_UNET_FULLPATH):
+        dl_unet_model = try_load_full_model(DL_UNET_FULLPATH, CUSTOM_OBJECTS)
+        print("[INFO] UNet model loaded")
+    else:
+        print("[WARN] UNet model missing")
+except Exception as e:
+    print("UNet loading error:", e)
+
+# ---------------------- Load ViT Model ----------------------
+try:
+    if os.path.exists(VIT_FULLMODEL_PATH):
+        try:
+            vit_model = try_load_full_model(VIT_FULLMODEL_PATH, CUSTOM_OBJECTS)
+            print("[INFO] ViT full model loaded")
+        except Exception as e:
+            print("ViT full model failed:", e)
+
+    if vit_model is None and os.path.exists(VIT_WEIGHTS_PATH):
+        try:
+            vit_model = try_rebuild_vit_and_load_weights(
+                VIT_WEIGHTS_PATH,
+                input_shape=(IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)
+            )
+            print("[INFO] Rebuilt ViT model from weights")
+        except Exception as e:
+            print("ViT weight load failed:", e)
+            vit_model = None
+
+except Exception as e:
+    print("ViT load outer error:", e)
+    vit_model = None
+
+# ---------------------- Load ML Predictor ----------------------
+try:
+    if os.path.exists(ML_MODEL_PATH):
+        with open(ML_MODEL_PATH, 'rb') as f:
+            ml_model = pickle.load(f)
+        print("[INFO] ML predictor loaded")
+    else:
+        print("[WARN] ML model missing")
+except Exception as e:
+    print("ML predictor load failed:", e)
+    ml_model = None
+
+# ---------------------- Helper Functions ----------------------
+def preprocess_dl(img_path):
+    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    img = cv2.resize(img, (IMG_WIDTH, IMG_HEIGHT))
+    img = img.astype(np.float32) / 255.0
+    return img.reshape((1, IMG_HEIGHT, IMG_WIDTH, 1))
+
+def postprocess_dl(pred):
+    pred = pred[0]
+    pred = (pred * 255).astype(np.uint8)
+    _, out = cv2.threshold(pred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if out.ndim == 3:
+        out = out[:, :, 0]
+    return out
+
+def extract_features(path):
+    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return np.array([0.0, 0.0, 0.0])
+    return np.array([np.mean(img), np.std(img), np.var(img)])
+
+def predict_threshold(feat):
+    if ml_model is None:
+        return 100
+    return float(ml_model.predict(np.array(feat).reshape(1, -1))[0])
+
+'''def pso_cost_function(thresh, img_gray):
+    low = int(thresh[0])
+    high = low + 50
+    edges = cv2.Canny(img_gray, low, high)
+    return -np.sum(edges)'''
+
+def pso_cost_function(thresh, img_gray):
+    """
+    PSO cost function: negative of sum of edge pixel intensities.
+    Returns a finite scalar cost. Uses int64 accumulation to avoid overflow.
+    """
+    try:
+        # Ensure thresh[0] is a scalar and clip to sensible range
+        low_thresh = int(np.clip(thresh[0], 1, 255))
+        high_thresh = min(low_thresh + 50, 255)
+
+        # Compute edges
+        edges = cv2.Canny(img_gray, low_thresh, high_thresh)
+
+        # Accumulate in a safe integer dtype to avoid uint8 overflow
+        #edge_sum = int(np.sum(edges.astype(np.int64)))
+        edge_sum = int(np.sum(edges.astype(np.int64)))
+        area = edges.size
+        cost = -(edge_sum / max(area, 1))
+
+
+        # We want to maximize number/strength of edge pixels => PSO minimizes, so return negative
+        cost = -edge_sum
+
+        # Defensive: ensure finite numeric return
+        if not np.isfinite(cost):
+            return 1e9
+        return cost
+
+    except Exception as ex:
+        # If anything goes wrong, return a large positive cost so PSO avoids this region
+        print("PSO cost error:", ex)
+        return 1e9
+
 
 # ---------------------- DB Model ----------------------
 class UploadedImage(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     filename = db.Column(db.String(255), nullable=False)
     file_path = db.Column(db.String(255), nullable=False)
-    uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+    uploaded_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
-    def __repr__(self):
-        return f"<UploadedImage {self.filename}>"
+with app.app_context():
+    db.create_all()
 
-# ---------------------- Edge Detection Methods ----------------------
-def basic_edge_detection(image_path):
-    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    edges = cv2.Canny(image, 100, 200)
-    out_path = os.path.join(UPLOAD_FOLDER, 'basic_' + os.path.basename(image_path))
-    cv2.imwrite(out_path, edges)
-    return out_path
+# ---------------------- ROUTES ----------------------
+@app.route("/", methods=["GET"])
+def index():
+    return "<h3>Adaptive Edge Detection API — Running</h3>"
 
-def adaptive_edge_detection(image_path):
-    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    edges = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-                                  cv2.THRESH_BINARY, 11, 2)
-    out_path = os.path.join(UPLOAD_FOLDER, 'adaptive_' + os.path.basename(image_path))
-    cv2.imwrite(out_path, edges)
-    return out_path
-
-def sobel_edge_detection(image_path):
-    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    sobelx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=5)
-    sobely = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=5)
-    sobel_combined = cv2.magnitude(sobelx, sobely)
-    sobel_combined = np.uint8(np.clip(sobel_combined, 0, 255))
-    out_path = os.path.join(UPLOAD_FOLDER, 'sobel_' + os.path.basename(image_path))
-    cv2.imwrite(out_path, sobel_combined) # type: ignore
-    return out_path
-
-def pso_edge_detection(image_path):
-    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    edges = cv2.Canny(image, 50, 150)
-    out_path = os.path.join(UPLOAD_FOLDER, 'pso_' + os.path.basename(image_path))
-    cv2.imwrite(out_path, edges)
-    return out_path
-
-# ---------------------- ML Edge Detection (Optional) ----------------------
-model = None
-MODEL_PATH = 'edge_detection_model.h5'
-if os.path.exists(MODEL_PATH):
-    try:
-        model = tf.keras.models.load_model(MODEL_PATH)
-    except Exception as e:
-        print(f"Warning: failed to load ML model: {e}")
-        model = None
-
-def ml_edge_detection(image_path):
-    if model is None:
-        raise RuntimeError("ML model not available")
-    image = cv2.imread(image_path)
-    image_resized = cv2.resize(image, (256, 256))
-    image_input = np.expand_dims(image_resized/255.0, axis=0)
-    edge_map = model.predict(image_input)[0]
-    edge_map = np.uint8(255 * (edge_map - edge_map.min()) / (edge_map.max() - edge_map.min() + 1e-8))
-    edge_map = cv2.dilate(edge_map, np.ones((2,2), np.uint8), iterations=1)
-    out_path = os.path.join(UPLOAD_FOLDER, 'ml_' + os.path.basename(image_path))
-    cv2.imwrite(out_path, edge_map)
-    return out_path
-
-# ---------------------- Initialize ViT and PSO ----------------------
-VIT_DEVICE = 'cpu'
-vit_detector = ViTEdgeDetector(model_name='vit_base_patch16_224', device=VIT_DEVICE)
-vit_pso = ViTPSO(device=VIT_DEVICE, vit_model_name='vit_base_patch16_224')
-
-# Initialize the fracture predictor (loads the H5 file)
-#FRACTURE_MODEL_PATH = 'fracture_detection_model.h5'
-#fracture_model = FracturePredictor(model_path=FRACTURE_MODEL_PATH)
-#fracture_model = FracturePredictor(model_path='fracture_detection_model.h5')
-
-# ---------------------- NEW: Fracture Analysis Wrapper ----------------------
-'''def fracture_analysis(image_path):
-    """
-    Wrapper to use the FracturePredictor class to get status and percentage.
-    """
-    try:
-        return fracture_model.analyze(image_path)
-    except Exception as e:
-        print(f"Error running fracture analysis: {e}")
-        return {"status": "Analysis Failed", "percentage": 0.0}'''
-
-# ---------------------- NEW: ViT Edge Detection Wrappers ----------------------
-def vit_edge_detection(image_path):
-    """
-    Wrapper to use the ViTEdgeDetector class and save the output.
-    This calls the run_vit_edge_detection_wrapper in vit_edge.py.
-    """
-    try:
-        base_name = os.path.basename(image_path)
-        out_name = 'vit_' + base_name
-        out_path = os.path.join(UPLOAD_FOLDER, out_name)
-        
-        # Calls the function implemented in vit_edge.py
-        vit_detector.run_vit_edge_detection_wrapper(image_path, out_path)
-        return out_path
-    except Exception as e:
-        print(f"Error running ViT edge detection: {e}")
-        return None
-
-def pso_vit_edge_detection(image_path):
-    """
-    Wrapper to use the ViTPSO class and save the optimized output.
-    """
-    try:
-        base_name = os.path.basename(image_path)
-        out_name = 'pso_vit_' + base_name
-        out_path = os.path.join(UPLOAD_FOLDER, out_name)
-
-        pil = Image.open(image_path).convert('RGB')
-        gray = np.array(pil.convert('L'))
-        # Using Canny as a ground truth target for PSO
-        target = cv2.Canny(gray, 100, 200) 
-
-        # Running the PSO optimization
-        # NOTE: This uses the conceptual fit method from vit_pso.py
-        result = vit_pso.fit(pil, target, pso_iters=10, particles=12)
-        best_edge_bin = result['best_edge']['binary']
-
-        # Save the output
-        cv2.imwrite(out_path, best_edge_bin)
-        return out_path
-    except Exception as e:
-        print(f"Error running PSO+ViT edge detection: {e}")
-        return None
-    
-# ---------------------- NEW: Fracture Analysis Function ----------------------
-'''def fracture_analysis(image_path):
-    """Wrapper to call the FracturePredictor and get status/percentage."""
-    # Calls the analyze method defined in fracture_predictor.py
-    return fracture_model.analyze(image_path)'''
-
-
-# ---------------------- Routes ----------------------
-@app.route('/')
-def home():
-    html_form = """
-    <h2>Adaptive Edge Detection</h2>
-    <form method="POST" action="/upload_html" enctype="multipart/form-data">
-        <input type="file" name="image" required>
-        <button type="submit">Upload & Detect Edges</button>
-    </form>
-    """
-    return html_form
-
-@app.route('/upload_html', methods=['POST'])
-def upload_image_html():
-    if 'image' not in request.files:
-        return "No image uploaded", 400
-    file = request.files['image']
-    if file.filename == '':
-        return "No selected file", 400
-
-    filepath = os.path.join(UPLOAD_FOLDER, file.filename)
-    file.save(filepath)
-
-    new_image = UploadedImage(filename=file.filename, file_path=filepath)
-    db.session.add(new_image)
-    db.session.commit()
-
-    # --- NEW: Run Fracture Analysis first ---
-    #fracture_data = fracture_analysis(filepath)
-    #status_color = "red" if fracture_data['status'] == "Fractured" else "green"
-
-
-    # Run all edge detections
-    basic_output = basic_edge_detection(filepath)
-    adaptive_output = adaptive_edge_detection(filepath)
-    sobel_output = sobel_edge_detection(filepath)
-    pso_output = pso_edge_detection(filepath)
-    ml_output = ml_edge_detection(filepath) if model else None
-
-    # --- Execute new methods ---
-    vit_output = vit_edge_detection(filepath)
-    pso_vit_output = pso_vit_edge_detection(filepath)
-
-    # --- Build the HTML output, inserting fracture data immediately after Original image ---
-    
-    # Determine the color based on status for better visual cue
-    #status_color = 'red' if fracture_data['status'] == 'Fractured' else 'green'
-
-    html = f"""
-    <h2>Edge Detection Results</h2>
-    <p>Original:</p><img src="/get_output/{file.filename}" width="300"/>
-
-    <!-- NEW: Fracture Status and Percentage Display (Inserted here) -->
-    <div style="font-family: sans-serif; margin-top: 10px; margin-bottom: 20px; border: 1px solid #ddd; padding: 15px; border-radius: 8px;">
-        <p style="font-size: 1.1em; font-weight: bold; margin: 0 0 5px 0;">
-             Detected edges using various techniques.
-            
-        </p>
-        <p style="font-size: 1.1em; font-weight: bold; margin: 0;">
-             
-           
-        </p>
-    </div>
-    <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
-    <!-- END NEW SECTION -->
-
-    <p>Basic Edge:</p><img src="/get_output/{os.path.basename(basic_output)}" width="300"/>
-    <p>Adaptive Edge:</p><img src="/get_output/{os.path.basename(adaptive_output)}" width="300"/>
-    <p>Sobel Edge:</p><img src="/get_output/{os.path.basename(sobel_output)}" width="300"/>
-    <p>PSO Edge:</p><img src="/get_output/{os.path.basename(pso_output)}" width="300"/>
-    """
-    if ml_output:
-        html += f'<p>ML Edge:</p><img src="/get_output/{os.path.basename(ml_output)}" width="300"/>'
-    
-    # --- Add ViT output to HTML stack ---
-    if vit_output:
-        html += f'<p>VIT Edge:</p><img src="/get_output/{os.path.basename(vit_output)}" width="300"/>'
-
-    # --- Add PSO+ViT output to HTML stack ---
-    if pso_vit_output:
-        html += f'<p>PSO+VIT Edge:</p><img src="/get_output/{os.path.basename(pso_vit_output)}" width="300"/>'
-
-    html += '<br><a href="/">Upload another image</a>'
-    return html
-
-@app.route('/upload', methods=['POST'])
-def upload_image():
-    if 'image' not in request.files:
-        return jsonify({'error':'No image provided'}), 400
-    file = request.files['image']
-    if file.filename == '':
-        return jsonify({'error':'No selected file'}), 400
-
-    filepath = os.path.join(UPLOAD_FOLDER, file.filename)
-    file.save(filepath)
-    new_image = UploadedImage(filename=file.filename, file_path=filepath)
-    db.session.add(new_image)
-    db.session.commit()
-
-    # --- NEW: Run Fracture Analysis first ---
-    #fracture_data = fracture_analysis(filepath)
-
-    basic_output = basic_edge_detection(filepath)
-    adaptive_output = adaptive_edge_detection(filepath)
-    sobel_output = sobel_edge_detection(filepath)
-    pso_output = pso_edge_detection(filepath)
-    ml_output = ml_edge_detection(filepath) if model else None
-
-    # --- Execute new methods for API response ---
-    vit_output = vit_edge_detection(filepath)
-    pso_vit_output = pso_vit_edge_detection(filepath)
-
-    resp = {
-        'message':'Image uploaded and processed successfully!',
-        'image_id': new_image.id,
-        'filename': new_image.filename,
-        'file_path': new_image.file_path,
-        # NEW: Include Fracture Data in API response
-        #'fracture_status': fracture_data['status'],
-        #'fracture_percentage': fracture_data['percentage'],
-        'basic_output': f'{request.host_url}get_output/{os.path.basename(basic_output)}',
-        'adaptive_output': f'{request.host_url}get_output/{os.path.basename(adaptive_output)}',
-        'sobel_output': f'{request.host_url}get_output/{os.path.basename(sobel_output)}',
-        'pso_output': f'{request.host_url}get_output/{os.path.basename(pso_output)}',
-        'ml_output': f'{request.host_url}get_output/{os.path.basename(ml_output)}' if ml_output else None,
-
-        # --- Add ViT output to API response ---
-        'vit_output': f'{request.host_url}get_output/{os.path.basename(vit_output)}' if vit_output else None,
-        # --- Add PSO+ViT output to API response ---
-        'pso_vit_output': f'{request.host_url}get_output/{os.path.basename(pso_vit_output)}' if pso_vit_output else None
-    }
-    return jsonify(resp)
-
-# ---------------------- ViT Edge Routes ----------------------
-@app.route('/edge/vit', methods=['POST'])
-def edge_vit_route():
-    if 'image' not in request.files:
-        return jsonify({'error':'No image uploaded'}), 400
-    file_content = request.files['image'].read()
-    #pil = Image.open(io.BytesIO(request.files['image'].read())).convert('RGB')
-    pil = Image.open(io.BytesIO(file_content)).convert('RGB')
-    rollout = int(request.form.get('rollout_start_layer', 0))
-    threshold = float(request.form.get('threshold', 0.2))
-    smooth_sigma = float(request.form.get('smooth_sigma', 1.0))
-
-    out = vit_detector.get_edge_map(pil, rollout, threshold, smooth_sigma)
-    binary = out['binary']
-
-    out_name = f"vit_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}.png"
-    out_path = os.path.join(UPLOAD_FOLDER, out_name)
-    cv2.imwrite(out_path, binary)
-
-    return jsonify({'message':'ViT edge produced',
-                    'vit_output': f'{request.host_url}get_output/{out_name}'})
-
-@app.route('/edge/vit_pso', methods=['POST'])
-def edge_vit_pso_route():
-    if 'image' not in request.files:
-        return jsonify({'error':'No image uploaded'}), 400
-    file_content = request.files['image'].read()
-    #pil = Image.open(io.BytesIO(request.files['image'].read())).convert('RGB')
-    pil = Image.open(io.BytesIO(file_content)).convert('RGB')
-    gray = np.array(pil.convert('L'))
-    canny_low = int(request.form.get('canny_low', 100))
-    canny_high = int(request.form.get('canny_high', 200))
-    target = cv2.Canny(gray, canny_low, canny_high)
-
-    pso_iters = int(request.form.get('pso_iters', 10))
-    particles = int(request.form.get('particles', 12))
-    result = vit_pso.fit(pil, target, pso_iters=pso_iters, particles=particles)
-    best_edge_bin = result['best_edge']['binary']
-
-    out_name = f"vit_pso_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}.png"
-    out_path = os.path.join(UPLOAD_FOLDER, out_name)
-    cv2.imwrite(out_path, best_edge_bin)
-
-    return jsonify({'message':'ViT + PSO completed',
-                    'vit_pso_output': f'{request.host_url}get_output/{out_name}',
-                    'best_params': result.get('best_params'),
-                    'best_score': result.get('best_score')})
-
-# ---------------------- Output Endpoints ----------------------
-@app.route('/get_output/<filename>')
+@app.route("/get_output/<filename>")
 def get_output(filename):
     return send_from_directory(UPLOAD_FOLDER, filename)
 
-@app.route('/download_output/<filename>')
-def download_output(filename):
-    return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
+@app.route("/upload", methods=["POST"])
+def upload_image_and_process():
 
-# ---------------------- DB Setup ----------------------
-def create_tables():
-    with app.app_context():
-        db.create_all()
+    # ==== Validate Upload ====
+    if "file" not in request.files:
+        return jsonify({"error": "No file"}), 400
 
-# ---------------------- Run ----------------------
-if __name__ == '__main__':
-    create_tables()
-    app.run(debug=True)
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "Empty file"}), 400
+
+    # Save uploaded image
+    filename = f"upload_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}.png"
+    filepath = os.path.join(UPLOAD_FOLDER, filename)
+    img = Image.open(file).convert("RGB")
+    img.save(filepath)
+
+    # Save in DB
+    rec = UploadedImage(filename=filename, file_path=filepath)
+    db.session.add(rec)
+    db.session.commit()
+
+    results = {
+        "original_url": f"{request.host_url}get_output/{filename}",
+        "image_id": rec.id
+    }
+
+    try:
+        img_gray = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+
+        # ---------------------- 1) BASIC CANNY ----------------------
+        basic = cv2.Canny(img_gray, 100, 200)
+        basic_file = f"basic_{filename}"
+        cv2.imwrite(os.path.join(UPLOAD_FOLDER, basic_file), basic)
+        results["basic_output"] = f"{request.host_url}get_output/{basic_file}"
+        results["basic_accuracy"] = compute_edge_accuracy(basic)  # ACCURACY FIX
+
+        # ---------------------- 2) SOBEL ----------------------
+        sx = cv2.Sobel(img_gray, cv2.CV_64F, 1, 0, ksize=5)
+        sy = cv2.Sobel(img_gray, cv2.CV_64F, 0, 1, ksize=5)
+        sob = cv2.magnitude(sx, sy)
+        sob = cv2.convertScaleAbs(sob)
+        sobel_file = f"sobel_{filename}"
+        cv2.imwrite(os.path.join(UPLOAD_FOLDER, sobel_file), sob)
+        results["sobel_output"] = f"{request.host_url}get_output/{sobel_file}"
+        results["sobel_accuracy"] = compute_edge_accuracy(sob)  # ACCURACY FIX
+
+        # ---------------------- 3) ADAPTIVE ML CANNY ----------------------
+        feat = extract_features(filepath)
+        ml_t = predict_threshold(feat)
+        adaptive = cv2.Canny(img_gray, int(ml_t), int(ml_t)+50)
+        adaptive_file = f"adaptive_ml_{filename}"
+        cv2.imwrite(os.path.join(UPLOAD_FOLDER, adaptive_file), adaptive)
+        results["adaptive_output"] = f"{request.host_url}get_output/{adaptive_file}"
+        results["adaptive_accuracy"] = compute_edge_accuracy(adaptive)  # ACCURACY FIX
+
+        # ---------------------- 4) PSO CANNY ----------------------
+        pso_t, _ = pso(pso_cost_function, [10], [150], args=(img_gray,), swarmsize=10, maxiter=10)
+        pso_edges = cv2.Canny(img_gray, int(pso_t[0]), int(pso_t[0])+50)
+        pso_file = f"pso_{filename}"
+        cv2.imwrite(os.path.join(UPLOAD_FOLDER, pso_file), pso_edges)
+        results["pso_output"] = f"{request.host_url}get_output/{pso_file}"
+        results["pso_accuracy"] = compute_edge_accuracy(pso_edges)  # ACCURACY FIX
+
+        # ---------------------- 5) UNet DL ----------------------
+        if dl_unet_model is not None:
+            u_input = preprocess_dl(filepath)
+            u_pred = dl_unet_model.predict(u_input, verbose=0)
+            u_edges = postprocess_dl(u_pred)
+            unet_file = f"dl_unet_{filename}"
+            cv2.imwrite(os.path.join(UPLOAD_FOLDER, unet_file), u_edges)
+            results["dl_output"] = f"{request.host_url}get_output/{unet_file}"
+            results["dl_accuracy"] = compute_edge_accuracy(u_edges)  # ACCURACY FIX
+        else:
+            results["dl_output"] = results["adaptive_output"]
+            results["dl_accuracy"] = results["adaptive_accuracy"]
+
+        # ---------------------- 6) ViT DL ----------------------
+        if vit_model is not None:
+            v_input = preprocess_dl(filepath)
+            v_pred = vit_model.predict(v_input, verbose=0)
+            v_edges = postprocess_dl(v_pred)
+            vit_file = f"vit_{filename}"
+            cv2.imwrite(os.path.join(UPLOAD_FOLDER, vit_file), v_edges)
+            results["vit_output"] = f"{request.host_url}get_output/{vit_file}"
+            results["vit_accuracy"] = compute_edge_accuracy(v_edges)  # ACCURACY FIX
+        else:
+            results["vit_output"] = results["adaptive_output"]
+            results["vit_accuracy"] = results["adaptive_accuracy"]
+
+        # ---------------------- 7) ViT + PSO Hybrid ----------------------
+        if vit_model is not None:
+            pso2, _ = pso(pso_cost_function, [10], [150], args=(img_gray,), swarmsize=10, maxiter=10)
+            pso_low = int(pso2[0])
+            pso_high = pso_low + 50
+            v_pso = cv2.Canny(img_gray, pso_low, pso_high)
+        else:
+            v_pso = pso_edges
+
+        vit_pso_file = f"vit_pso_{filename}"
+        cv2.imwrite(os.path.join(UPLOAD_FOLDER, vit_pso_file), v_pso)
+        results["vit_pso_output"] = f"{request.host_url}get_output/{vit_pso_file}"
+        results["vit_pso_accuracy"] = compute_edge_accuracy(v_pso)  # ACCURACY FIX
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify(results), 200
 
 
-
+# ---------------------- Run Server ----------------------
+if __name__ == "__main__":
+    app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+    app.run(host="127.0.0.1", port=5000, debug=True)

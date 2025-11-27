@@ -1,37 +1,509 @@
+<!--<!DOCTYPE html>
+<html>
+<head>
+    <title>Full Edge Detection Comparison</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        /* CSS to ensure image sharpness and clear layout */
+        #results img {
+            width: 100%;
+            max-width: 300px;
+            margin: 10px;
+            border: 1px solid #ddd;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+        .img-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            border: 1px solid #eee;
+        }
+        .results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 10px;
+        }
+        p.img-title {
+            font-weight: bold;
+            margin-top: 5px;
+            margin-bottom: 2px;
+            color: #333;
+        }
+        /* Separator for Deep Learning Group */
+        .dl-group {
+            border-top: 3px solid #007bff;
+            padding-top: 15px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Full Edge Detection Comparison</h1>
+
+    <div class="container">
+        <h2>Upload X-Ray Image</h2>
+        <form id="uploadForm" enctype="multipart/form-data">
+            <input type="file" name="image" id="imageInput" required/>
+            <button type="submit">Process All 7 Methods</button>
+        </form>
+    </div>
+
+    <div id="results" class="container">
+        <h3>Results</h3>
+        <div id="results-grid" class="results-grid"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('uploadForm');
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const file = document.getElementById('imageInput').files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file); // CRITICAL: Must be 'file'
+
+            const resultsDiv = document.getElementById('results-grid');
+            resultsDiv.innerHTML = "<h3>Processing all 7 methods...</h3>";
+
+            try {
+                // Call the /upload endpoint ONCE
+                const res = await fetch('http://127.0.0.1:5000/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!res.ok) {
+                    throw new Error(`Server error: ${res.status}`);
+                }
+
+                const data = await res.json();
+                
+                let html = ``;
+                
+                // Define the full set of outputs to display
+                const displayOrder = [
+                    { key: 'original_url', title: 'Original X-Ray', group: 'Input' },
+                    { key: 'basic_output', title: '1. Basic Canny', group: 'Traditional' },
+                    { key: 'sobel_output', title: '2. Sobel Gradient', group: 'Traditional' },
+                    { key: 'adaptive_output', title: '3. Adaptive (ML-Canny)', group: 'ML' },
+                    { key: 'pso_output', title: '4. PSO-Optimized Canny', group: 'Optimization' },
+                    { key: 'dl_output', title: '5. Deep Learning (UNet)', group: 'DL' },
+                    { key: 'vit_output', title: '6. Hybrid ViT (Trained)', group: 'DL' },
+                    { key: 'vit_pso_output', title: '7. Hybrid ViT+PSO (Optimized)', group: 'DL' }
+                ];
+                
+                let currentGroup = '';
+
+                for (const item of displayOrder) {
+                    if (data[item.key]) {
+                        // Check if we need to start a new visual group
+                        if (item.group !== currentGroup) {
+                             if (currentGroup !== '') html += `</div>`; // Close previous group
+                             html += `<div class="dl-group"><h4>${item.group} Methods</h4>`;
+                             currentGroup = item.group;
+                        }
+                        
+                        html += `
+                            <div class="img-group">
+                                <p class="img-title">${item.title}</p>
+                                <img src="${data[item.key]}" alt="${item.title}" />
+                            </div>
+                        `;
+                    }
+                }
+                html += `</div>`; // Close final group
+                
+                resultsDiv.innerHTML = html;
+
+            } catch (error) {
+                console.error("Error during upload:", error);
+                resultsDiv.innerHTML = `<h3>Error: Processing failed.</h3><p>Server did not return a 200 response. Check the backend terminal for model loading errors.</p>`;
+            }
+        });
+    </script>
+</body>
+</html>-->
+
+<!--==================================================================================================================================================================-->
+
+<!--<!DOCTYPE html>
+<html>
+<head>
+    <title>Full Edge Detection Comparison</title>
+    <link rel="stylesheet" href="style.css">
+
+    <style>
+        /* EXTRA INLINE CSS for layout */
+        #results img {
+            width: 100%;
+            max-width: 300px;
+            margin: 10px;
+            border: 1px solid #ddd;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        .img-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            border: 1px solid #eee;
+        }
+
+        .results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 10px;
+        }
+
+        p.img-title {
+            font-weight: bold;
+            margin-top: 5px;
+            margin-bottom: 2px;
+            color: #333;
+        }
+
+        .accuracy-label {
+            font-size: 14px;
+            color: #007bff;
+            font-weight: bold;
+            margin-top: 4px;
+        }
+
+        /* Group Starter Line */
+        .dl-group {
+            border-top: 3px solid #007bff;
+            padding-top: 15px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Full Edge Detection Comparison</h1>
+
+    <div class="container">
+        <h2>Upload X-Ray Image</h2>
+
+        <form id="uploadForm" enctype="multipart/form-data">
+            <input type="file" name="file" id="imageInput" required />
+            <button type="submit">Process All 7 Methods</button>
+        </form>
+    </div>
+
+    <div id="results" class="container">
+        <h3>Results</h3>
+        <div id="results-grid" class="results-grid"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('uploadForm');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const file = document.getElementById('imageInput').files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const resultsDiv = document.getElementById('results-grid');
+            resultsDiv.innerHTML = "<h3>Processing all 7 methods...</h3>";
+
+            try {
+                const res = await fetch("http://127.0.0.1:5000/upload", {
+                    method: "POST",
+                    body: formData
+                });
+
+                if (!res.ok) {
+                    throw new Error(`Server error: ${res.status}`);
+                }
+
+                const data = await res.json();
+
+                // OUTPUT DISPLAY SET
+                const displaySet = [
+                    { key: 'original_url', title: 'Original X-Ray', acc: null, group: 'Input' },
+
+                    { key: 'basic_output', title: '1. Basic Canny', acc: 'basic_accuracy', group: 'Traditional' },
+                    { key: 'sobel_output', title: '2. Sobel Gradient', acc: 'sobel_accuracy', group: 'Traditional' },
+
+                    { key: 'adaptive_output', title: '3. Adaptive ML-Canny', acc: 'adaptive_accuracy', group: 'ML' },
+                    { key: 'pso_output', title: '4. PSO Optimized Canny', acc: 'pso_accuracy', group: 'Optimization' },
+
+                    { key: 'dl_output', title: '5. Deep Learning UNet', acc: 'dl_accuracy', group: 'DL' },
+                    { key: 'vit_output', title: '6. Hybrid ViT', acc: 'vit_accuracy', group: 'DL' },
+                    { key: 'vit_pso_output', title: '7. Hybrid ViT + PSO', acc: 'vit_pso_accuracy', group: 'DL' }
+                ];
+
+                let html = ``;
+                let lastGroup = ``;
+
+                for (let item of displaySet) {
+                    if (!data[item.key]) continue;
+
+                    // Create group header
+                    if (item.group !== lastGroup) {
+                        if (lastGroup !== ``) html += `</div>`;
+                        html += `<div class="dl-group"><h3>${item.group} Methods</h3>`;
+                        lastGroup = item.group;
+                    }
+
+                    html += `
+                        <div class="img-group">
+                            <p class="img-title">${item.title}</p>
+                            <img src="${data[item.key]}" alt="${item.title}" />
+                            ${
+                                item.acc
+                                ? `<p class="accuracy-label">Accuracy: ${data[item.acc]}%</p>`
+                                : ``
+                            }
+                        </div>
+                    `;
+                }
+
+                html += `</div>`;
+                resultsDiv.innerHTML = html;
+
+            } catch (err) {
+                console.error("Upload failed:", err);
+                resultsDiv.innerHTML = `<p style="color:red;">Processing Failed. Check Backend Console.</p>`;
+            }
+        });
+    </script>
+</body>
+</html>-->
+
+
+
+
+
+
+
+
+
+
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Adaptive Edge Detection</title>
-</head>
-<body>
-  <h2>Upload Image</h2>
-  <form id="uploadForm" enctype="multipart/form-data">
-    <input type="file" name="image" id="imageInput"/>
-    <button type="submit">Upload</button>
-  </form>
+    <title>Full Edge Detection Comparison</title>
+    <link rel="stylesheet" href="style.css">
 
-  <div id="results"></div>
+    <!-- ✅ Add Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-  <script>
-    const form = document.getElementById('uploadForm');
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const file = document.getElementById('imageInput').files[0];
-      const formData = new FormData();
-      formData.append('image', file);
-      const res = await fetch('http://127.0.0.1:5000/upload', {
-        method: 'POST',
-        body: formData
-      });
-      const data = await res.json();
-      let html = `<h3>Results</h3>`;
-      for (const key of ['basic_output','adaptive_output','sobel_output','pso_output','ml_output']){
-        if (data[key]){
-          html += `<p>${key}:</p><img src="${data[key]}" width="300"/>`;
+    <style>
+        /* EXTRA INLINE CSS for layout */
+        #results img {
+            width: 100%;
+            max-width: 300px;
+            margin: 10px;
+            border: 1px solid #ddd;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
         }
-      }
-      document.getElementById('results').innerHTML = html;
-    });
-  </script>
+
+        .img-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            border: 1px solid #eee;
+        }
+
+        .results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 10px;
+        }
+
+        p.img-title {
+            font-weight: bold;
+            margin-top: 5px;
+            margin-bottom: 2px;
+            color: #333;
+        }
+
+        .accuracy-label {
+            font-size: 14px;
+            color: #007bff;
+            font-weight: bold;
+            margin-top: 4px;
+        }
+
+        /* Group Starter Line */
+        .dl-group {
+            border-top: 3px solid #007bff;
+            padding-top: 15px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Full Edge Detection Comparison</h1>
+
+    <div class="container">
+        <h2>Upload X-Ray Image</h2>
+
+        <form id="uploadForm" enctype="multipart/form-data">
+            <input type="file" name="file" id="imageInput" required />
+            <button type="submit">Process All 7 Methods</button>
+        </form>
+    </div>
+
+    <div id="results" class="container">
+        <h3>Results</h3>
+
+        <div id="results-grid" class="results-grid"></div>
+
+        <!-- ✅ Pie Chart Placeholder -->
+        <h3 style="margin-top: 40px;">Accuracy Pie Chart</h3>
+        <canvas id="accuracyChart" width="400" height="400"></canvas>
+    </div>
+
+    <script>
+        const form = document.getElementById('uploadForm');
+        let accuracyChartInstance = null;
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const file = document.getElementById('imageInput').files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const resultsDiv = document.getElementById('results-grid');
+            resultsDiv.innerHTML = "<h3>Processing all 7 methods...</h3>";
+
+            try {
+                const res = await fetch("http://127.0.0.1:5000/upload", {
+                    method: "POST",
+                    body: formData
+                });
+
+                if (!res.ok) {
+                    throw new Error(`Server error: ${res.status}`);
+                }
+
+                const data = await res.json();
+
+                // OUTPUT DISPLAY SET
+                const displaySet = [
+                    { key: 'original_url', title: 'Original X-Ray', acc: null, group: 'Input' },
+
+                    { key: 'basic_output', title: '1. Basic Canny', acc: 'basic_accuracy', group: 'Traditional' },
+                    { key: 'sobel_output', title: '2. Sobel Gradient', acc: 'sobel_accuracy', group: 'Traditional' },
+
+                    { key: 'adaptive_output', title: '3. Adaptive ML-Canny', acc: 'adaptive_accuracy', group: 'ML' },
+                    { key: 'pso_output', title: '4. PSO Optimized Canny', acc: 'pso_accuracy', group: 'Optimization' },
+
+                    { key: 'dl_output', title: '5. Deep Learning UNet', acc: 'dl_accuracy', group: 'DL' },
+                    { key: 'vit_output', title: '6. Hybrid ViT', acc: 'vit_accuracy', group: 'DL' },
+                    { key: 'vit_pso_output', title: '7. Hybrid ViT + PSO', acc: 'vit_pso_accuracy', group: 'DL' }
+                ];
+
+                let html = ``;
+                let lastGroup = ``;
+
+                for (let item of displaySet) {
+                    if (!data[item.key]) continue;
+
+                    // Create group header
+                    if (item.group !== lastGroup) {
+                        if (lastGroup !== ``) html += `</div>`;
+                        html += `<div class="dl-group"><h3>${item.group} Methods</h3>`;
+                        lastGroup = item.group;
+                    }
+
+                    html += `
+                        <div class="img-group">
+                            <p class="img-title">${item.title}</p>
+                            <img src="${data[item.key]}" alt="${item.title}" />
+                            ${
+                                item.acc
+                                ? `<p class="accuracy-label">Accuracy: ${data[item.acc]}%</p>`
+                                : ``
+                            }
+                        </div>
+                    `;
+                }
+
+                html += `</div>`;
+                resultsDiv.innerHTML = html;
+
+                // ============================
+                // PIE CHART CODE (NEW PART)
+                // ============================
+
+                const labels = [
+                    "Basic Canny",
+                    "Sobel",
+                    "ML Canny",
+                    "PSO Canny",
+                    "UNet",
+                    "ViT",
+                    "ViT + PSO"
+                ];
+
+                const accuracyValues = [
+                    data.basic_accuracy,
+                    data.sobel_accuracy,
+                    data.adaptive_accuracy,
+                    data.pso_accuracy,
+                    data.dl_accuracy,
+                    data.vit_accuracy,
+                    data.vit_pso_accuracy
+                ];
+
+                // Destroy old chart if user uploads again
+                if (accuracyChartInstance) {
+                    accuracyChartInstance.destroy();
+                }
+
+                const ctx = document.getElementById("accuracyChart").getContext("2d");
+
+                accuracyChartInstance = new Chart(ctx, {
+                    type: "pie",
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: "Accuracy (%)",
+                            data: accuracyValues,
+                            backgroundColor: [
+                                "#ff6384", "#36a2eb", "#ffcd56",
+                                "#4bc0c0", "#9966ff", "#ff9f40", "#c9cbcf"
+                            ]
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: { position: 'bottom' }
+                        }
+                    }
+                });
+
+            } catch (err) {
+                console.error("Upload failed:", err);
+                resultsDiv.innerHTML = `<p style="color:red;">Processing Failed. Check Backend Console.</p>`;
+            }
+        });
+    </script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 #--------------------------------------------------------------------------------------Vit class--------------------------------------------------------------------------------------
 
-import cv2
+'''import cv2
 import numpy as np
 from PIL import Image
 
@@ -68,3 +68,4 @@ class ViTEdgeDetector:
 
         cv2.imwrite(output_filename, binary)
         return output_filename
+'''

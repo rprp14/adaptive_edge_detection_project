@@ -1,4 +1,7 @@
-body {
+/* FILE: frontend/style.css */
+/* PURPOSE: Contains the 'image-rendering' fix to stop browser blur. */
+
+/*body {
     font-family: Arial, sans-serif;
     margin: 0;
     padding: 0;
@@ -43,5 +46,80 @@ button:hover {
 #results img {
     width: 100%;
     max-width: 300px;
+    margin: 10px; */
+
+    /* --- THIS IS THE FIX --- */
+    /*image-rendering: -moz-crisp-edges;  For Firefox */
+    /*image-rendering: pixelated; /* For Chrome, Edge, Safari */
+    /*image-rendering: crisp-edges; /* Old browsers 
+}*/
+
+/*================================================================================================================================*/
+
+/* FILE: frontend/style.css */
+/* PURPOSE: Contains layout + crisp rendering fix */
+
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #f4f4f9;
+}
+
+.container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    background-color: white;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+h1 {
+    text-align: center;
+    color: #333;
+}
+
+form {
+    margin-bottom: 20px;
+}
+
+button {
+    display: block;
+    width: 100%;
+    padding: 10px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    cursor: pointer;
+}
+
+button:hover {
+    background-color: #45a049;
+}
+
+#results {
+    margin-top: 20px;
+}
+
+#results img {
+    width: 100%;
+    max-width: 300px;
     margin: 10px;
+
+    image-rendering: -moz-crisp-edges;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+}
+
+.img-title {
+    font-weight: bold;
+    text-align: center;
+}
+
+.accuracy-label {
+    text-align: center;
+    color: #007bff;
+    font-size: 14px;
+    font-weight: bold;
+    margin-top: -5px;
 }
