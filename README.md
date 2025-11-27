@@ -1,7 +1,7 @@
-# 🧠 Adaptive Edge Detection using PSO + Machine Learning  
+#  Adaptive Edge Detection using PSO + Machine Learning  
 ### (Canny + Sobel + Particle Swarm Optimization + Vision Transformer)
 
-## 📌 Overview  
+##  Overview  
 This project implements an **Adaptive Edge Detection System** combining:
 
 - **Traditional edge detectors** → *Canny* & *Sobel*  
@@ -10,34 +10,72 @@ This project implements an **Adaptive Edge Detection System** combining:
 - **Fusion Model** → improves accuracy and adaptability over standard methods  
 
 The goal is to achieve:  
-✔ Higher accuracy  
-✔ Adaptive thresholding  
-✔ Better edge quality  
-✔ Robustness for real-time applications  
+ -Higher accuracy  
+ -Adaptive thresholding  
+ -Better edge quality  
+ -Robustness for real-time applications  
 
 ---
 
-## 📁 Project Structure  
+##  Project Structure  
 ```
 adaptive_edge_detection_project/
 │
+├── .gitignore
+├── README.md
+├── requirements.txt
+│
 ├── backend/
-│   ├── canny_detector.py
-│   ├── sobel_detector.py
-│   ├── pso_optimizer.py
-│   ├── vit_model.py
-│   ├── train_vit_pso_model.py
-│   ├── utils.py
-│   ├── __init__.py
-│   └── sample_images/
+│   ├── app.py                  # Main backend application / API
+│   ├── models.py               # Model loading + architecture definitions
+│   ├── generate_masks.py       # Mask generation utilities
+│   ├── train_model.py          # Training master script
+│   ├── train_edge_model.py     # Edge model training
+│   ├── train_unet_model.py     # U-Net training script
+│   ├── train_vit_model.py      # ViT training script
+│   ├── vit_model.py            # Vision Transformer model
+│   ├── threshold_predictor.pkl # Trained threshold prediction model
+│   ├── images.db               # Database for storing image metadata
+│
+│   ├── canny_masks/
+│   │   └── ...                 # Auto-generated canny mask outputs
+│
+│   ├── dataset/
+│   │   └── ...                 # Training dataset images
+│
+│   ├── instance/
+│   │   └── images.db           # Instance database
+│
+│   ├── models/
+│   │   ├── edge_detection_model.h5
+│   │   ├── vit_unet_model.h5
+│   │   ├── vit_unet_weights.h5
+│   │   └── threshold_predictor.pkl
+│
+│   ├── src/
+│   │   ├── __init__.py
+│   │   ├── edge_detection.py       # Main edge detection logic
+│   │   ├── edge_accuracy.py        # Accuracy measurement
+│   │   ├── feature_extraction.py   # Feature extractor
+│   │   ├── ml_predictor.py         # ML prediction logic
+│   │   └── pso_optimizer.py        # Particle Swarm Optimization module
+│
+│   ├── uploads/
+│   │   └── ...                 # Uploaded input images from frontend
+│
 │
 ├── frontend/
-│   └── index.html
+│   ├── index.html              # Main UI webpage
+│   ├── script.js               # Frontend logic (image upload, preview)
+│   ├── style.css               # UI styling
+│   └── view_images.html        # Page to view saved images
 │
-├── requirements.txt
-├── README.md
-└── run_server.py
-```
+├── uploads/
+│   └── ...                     # Global uploads folder (if used)
+│
+└── Edge-detection-using-PSO-and-ML/ (optional folder)
+    └── ...                     # Extra materials or report files
+
 
 ---
 
