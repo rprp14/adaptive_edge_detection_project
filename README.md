@@ -265,6 +265,10 @@ Contributions are welcome!
 
 ---
 
-## 👩‍🎓 Author  
+##  Author  
+**Chetan Agrawal**
 **Renuka Balaji Biradar**  
+**Abhishek Bobade**
+**Pranjali Bodke**
+Maharashtra Institute of Technology , Chhatrapati Sambhajinagar
 Final Year B.Tech (CSE)  
