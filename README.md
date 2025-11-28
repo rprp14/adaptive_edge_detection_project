@@ -267,13 +267,11 @@ Contributions are welcome!
 
 ##  Author  
 '''
-**Chetan Agrawal**
-**Renuka Balaji Biradar**
-**Abhishek Bobade**
-**Pranjali Bodke**
+1. Chetan Santosh Agrawal
+2. Renuka Balaji Biradar
+3. Abhishek Vikram Bobade
+4. Pranjali Pandurang Bodke
 
 '''
 Maharashtra Institute of Technology , Chhatrapati Sambhajinagar
----
 Final Year B.Tech (CSE)  
----
