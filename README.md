@@ -266,9 +266,9 @@ Contributions are welcome!
 ---
 
 ##  Author  
-**Chetan Agrawal**
-**Renuka Balaji Biradar**  
-**Abhishek Bobade**
-**Pranjali Bodke**
+--**Chetan Agrawal**
+--**Renuka Balaji Biradar**  
+--**Abhishek Bobade**
+--**Pranjali Bodke**
 Maharashtra Institute of Technology , Chhatrapati Sambhajinagar
 Final Year B.Tech (CSE)  
