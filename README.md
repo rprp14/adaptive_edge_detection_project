@@ -226,7 +226,7 @@ Run the command
 ```bash
 python -m http.server 3000
 ```
-After running this command go on the Crome and type "localhost://3000" in the search bar, you will find the output.
+After running this command go on the Crome and type "localhost:3000" in the search bar, you will find the output.
 
 ---
 
@@ -266,9 +266,15 @@ Contributions are welcome!
 ---
 
 ##  Author  
---**Chetan Agrawal**
---**Renuka Balaji Biradar**  
---**Abhishek Bobade**
---**Pranjali Bodke**
+**Chetan Agrawal**
+''
+**Renuka Balaji Biradar**
+''
+**Abhishek Bobade**
+''
+**Pranjali Bodke**
+''
 Maharashtra Institute of Technology , Chhatrapati Sambhajinagar
+''
 Final Year B.Tech (CSE)  
+''
